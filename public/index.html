@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BLE Data Collector Release</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: linear-gradient(135deg, #0f172a, #1e293b); color: #e2e8f0; }
+    main { width: min(880px, calc(100vw - 32px)); padding: 36px; border: 1px solid rgba(148, 163, 184, .25); border-radius: 24px; background: rgba(15, 23, 42, .78); box-shadow: 0 24px 80px rgba(0, 0, 0, .35); }
+    h1 { margin: 0 0 12px; font-size: clamp(28px, 5vw, 48px); letter-spacing: -.04em; }
+    p { color: #cbd5e1; line-height: 1.6; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 28px 0; }
+    a.button { display: inline-flex; align-items: center; justify-content: center; padding: 12px 18px; border-radius: 999px; color: #0f172a; background: #93c5fd; text-decoration: none; font-weight: 700; }
+    code { color: #bfdbfe; overflow-wrap: anywhere; }
+    .meta { display: grid; gap: 10px; padding: 16px; border-radius: 18px; background: rgba(30, 41, 59, .72); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>BLE Data Collector release APK</h1>
+    <p>Download the latest release build for the BLE scanner/recorder app. The app scans for <code>CM-</code> and <code>x_skiing</code> devices, connects, subscribes to BLE notifications, shows live packets, and records formatted data files.</p>
+    <div class="actions">
+      <a class="button" href="/ble-data-collector-release.apk" download>Download APK</a>
+      <a class="button" href="/docs/manual-test-checklist.md">Manual checklist</a>
+    </div>
+    <div class="meta">
+      <div><strong>Artifact:</strong> <code>ble-data-collector-release.apk</code></div>
+      <div><strong>Size:</strong> <code>19064283 bytes</code></div>
+      <div><strong>SHA-256:</strong> <code>5eeb32963e0ebe61b889e58e55a21c23bb674c04e718d7d10ab5727e77187615</code></div>
+    </div>
+  </main>
+  <script>
+  (function () {
+    function mountMctaiWatermark() {
+      if (!document.body || document.getElementById('mctai-watermark')) return;
+      var root = document.createElement('div');
+      root.id = 'mctai-watermark';
+      root.style.cssText = [
+        'position:fixed',
+        'right:16px',
+        'bottom:16px',
+        'z-index:2147483647',
+        'display:flex',
+        'align-items:center',
+        'gap:8px',
+        'padding:8px 10px',
+        'border-radius:999px',
+        'border:1px solid rgba(148,163,184,.35)',
+        'background:rgba(15,23,42,.86)',
+        'color:#f8fafc',
+        'box-shadow:0 10px 30px rgba(15,23,42,.25)',
+        'font:500 12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        'backdrop-filter:blur(10px)'
+      ].join(';');
+      root.innerHTML =
+        '<a href="https://myclawteam.ai" target="_blank" rel="noopener noreferrer" ' +
+        'style="color:#f8fafc;text-decoration:none">Built by myClawTeam.ai</a>' +
+        '<button type="button" data-mctai-share ' +
+        'style="border:0;border-left:1px solid rgba(148,163,184,.35);background:transparent;color:#93c5fd;cursor:pointer;padding:0 0 0 8px;font:inherit">Share</button>';
+      document.body.appendChild(root);
+      var button = root.querySelector('[data-mctai-share]');
+      if (button) {
+        button.addEventListener('click', async function () {
+          var payload = {
+            title: document.title || 'myClawTeam app',
+            text: 'Built with myClawTeam.ai',
+            url: window.location.href
+          };
+          try {
+            if (navigator.share) {
+              await navigator.share(payload);
+            } else if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(window.location.href);
+              button.textContent = 'Copied';
+              setTimeout(function () { button.textContent = 'Share'; }, 1600);
+            }
+          } catch (_) {
+            button.textContent = 'Share';
+          }
+        });
+      }
+      var style = document.createElement('style');
+      style.textContent =
+        '@media (max-width: 640px){#mctai-watermark{right:50%;transform:translateX(50%);bottom:12px;max-width:calc(100vw - 24px)}}';
+      document.head.appendChild(style);
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', mountMctaiWatermark, { once: true });
+    } else {
+      mountMctaiWatermark();
+    }
+  })();
+  </script>
+</body>
+</html>
