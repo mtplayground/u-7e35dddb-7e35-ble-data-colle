@@ -48,6 +48,8 @@ fun LiveScreen(
         uiState = connectionState,
         onDisconnect = connectionViewModel::disconnect,
         onRetry = connectionViewModel::retry,
+        onStartRecording = connectionViewModel::startRecording,
+        onStopRecording = { connectionViewModel.stopRecording() },
         onBack = onBack,
         modifier = modifier,
     )
@@ -59,6 +61,8 @@ private fun LiveScreenContent(
     uiState: ConnectionUiState,
     onDisconnect: () -> Unit,
     onRetry: () -> Unit,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -84,6 +88,11 @@ private fun LiveScreenContent(
         Text(
             text = "Records: ${uiState.recordCount}",
             style = MaterialTheme.typography.bodyMedium,
+        )
+        RecordingStatus(
+            uiState = uiState,
+            onStartRecording = onStartRecording,
+            onStopRecording = onStopRecording,
         )
         uiState.errorMessage?.let { message ->
             Text(
@@ -115,6 +124,54 @@ private fun LiveScreenContent(
         )
         Button(onClick = onBack) {
             Text(text = "Back")
+        }
+    }
+}
+
+@Composable
+private fun RecordingStatus(
+    uiState: ConnectionUiState,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = if (uiState.recordingState.isRecording) "Recording: Active" else "Recording: Stopped",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        uiState.recordingState.activeFileName?.let { fileName ->
+            Text(
+                text = "File: $fileName",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Text(
+            text = "Written: ${uiState.recordingState.writtenRecordCount}",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        uiState.recordingState.errorMessage?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = onStartRecording,
+                enabled = uiState.canStartRecording,
+            ) {
+                Text(text = "Start")
+            }
+            OutlinedButton(
+                onClick = onStopRecording,
+                enabled = uiState.canStopRecording,
+            ) {
+                Text(text = "Stop")
+            }
         }
     }
 }
@@ -176,6 +233,11 @@ private fun LiveScreenPreview() {
             uiState = ConnectionUiState(
                 deviceAddress = "3F:89:E5:1E:2A:EF",
                 lifecycleState = com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState.Connected,
+                recordingState = RecordingUiState(
+                    isRecording = true,
+                    activeFileName = "x_skiing_20260707_142530.txt",
+                    writtenRecordCount = 2,
+                ),
                 formattedRecords = listOf(
                     "[15:44:22.726] 数据 -- x_skiing=3F:89:E5:1E:2A:EF\nHEX: BE BB 42 AD BA FF",
                     "[15:44:23.012] 数据 -- x_skiing=3F:89:E5:1E:2A:EF\nHEX: 9B 07 D8 FF FE FF",
@@ -183,6 +245,8 @@ private fun LiveScreenPreview() {
             ),
             onDisconnect = {},
             onRetry = {},
+            onStartRecording = {},
+            onStopRecording = {},
             onBack = {},
         )
     }
