@@ -93,7 +93,7 @@ class BleManager(
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                markDisconnected(gatt, "GATT connection failed with status $status.")
+                markDisconnected(gatt, gattFailureMessage(status))
                 return
             }
 
@@ -108,6 +108,8 @@ class BleManager(
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     val message = if (manualDisconnectRequested) {
                         null
+                    } else if (isBluetoothDisabled()) {
+                        "Bluetooth was turned off. Enable Bluetooth and retry."
                     } else {
                         "Device disconnected."
                     }
@@ -126,8 +128,12 @@ class BleManager(
                 return
             }
 
-            subscribeToFirstNotifiableCharacteristic(gatt)
-            _connectionState.value = ConnectionLifecycleState.Connected
+            val subscriptionResult = subscribeToFirstNotifiableCharacteristic(gatt)
+            if (subscriptionResult == null) {
+                _connectionState.value = ConnectionLifecycleState.Connected
+            } else {
+                markDisconnected(gatt, subscriptionResult)
+            }
         }
 
         override fun onCharacteristicChanged(
@@ -288,6 +294,8 @@ class BleManager(
             gatt.disconnect()
         } catch (_: SecurityException) {
             markDisconnected(gatt, "Bluetooth connect permission was revoked.")
+        } catch (_: RuntimeException) {
+            markDisconnected(gatt, "Unable to disconnect cleanly.")
         }
     }
 
@@ -322,6 +330,15 @@ class BleManager(
     private fun bluetoothAdapter(): BluetoothAdapter? =
         appContext.getSystemService(BluetoothManager::class.java)?.adapter
 
+    private fun isBluetoothDisabled(): Boolean {
+        val adapter = bluetoothAdapter() ?: return true
+        return try {
+            !adapter.isEnabled
+        } catch (_: SecurityException) {
+            true
+        }
+    }
+
     private fun scanSettings(): ScanSettings =
         ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -355,14 +372,15 @@ class BleManager(
     }
 
     @SuppressLint("MissingPermission")
-    private fun subscribeToFirstNotifiableCharacteristic(gatt: BluetoothGatt) {
+    private fun subscribeToFirstNotifiableCharacteristic(gatt: BluetoothGatt): String? {
         val characteristic = gatt.services
             .asSequence()
             .flatMap { service -> service.characteristics.asSequence() }
             .firstOrNull { characteristic -> characteristic.supportsNotifications() }
-            ?: return
+            ?: return "No notifiable characteristic was found on this device."
 
-        val descriptor = characteristic.getDescriptor(ClientCharacteristicConfigUuid) ?: return
+        val descriptor = characteristic.getDescriptor(ClientCharacteristicConfigUuid)
+            ?: return "The notifiable characteristic is missing its notification descriptor."
         val notificationEnabled = try {
             gatt.setCharacteristicNotification(characteristic, true)
         } catch (_: SecurityException) {
@@ -370,14 +388,19 @@ class BleManager(
         }
 
         if (!notificationEnabled) {
-            return
+            return "Bluetooth notification permission was denied or notification setup failed."
         }
 
-        writeNotificationDescriptor(
+        val descriptorWriteStarted = writeNotificationDescriptor(
             gatt = gatt,
             descriptor = descriptor,
             value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
         )
+        return if (descriptorWriteStarted) {
+            null
+        } else {
+            "Unable to enable Bluetooth notifications on this device."
+        }
     }
 
     private fun BluetoothGattCharacteristic.supportsNotifications(): Boolean =
@@ -437,6 +460,8 @@ class BleManager(
 
         try {
             gatt.close()
+        } catch (_: RuntimeException) {
+            // Adapter state can change while the stack is tearing down; local state is cleared below.
         } finally {
             if (currentGatt == gatt) {
                 currentGatt = null
@@ -444,6 +469,12 @@ class BleManager(
                 connectedMacAddress = null
             }
         }
+    }
+
+    private fun gattFailureMessage(status: Int): String = if (isBluetoothDisabled()) {
+        "Bluetooth was turned off. Enable Bluetooth and retry."
+    } else {
+        "GATT connection failed with status $status."
     }
 
     companion object {
