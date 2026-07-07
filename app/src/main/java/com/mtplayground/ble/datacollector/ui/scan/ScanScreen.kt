@@ -52,7 +52,7 @@ fun ScanScreen(
         onClearDevices = viewModel::clearDevices,
         onDeviceSelected = { device ->
             viewModel.selectDevice(device)
-            onDeviceSelected(device.name)
+            onDeviceSelected(device.macAddress)
         },
     )
 }
