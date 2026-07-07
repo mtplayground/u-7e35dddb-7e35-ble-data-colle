@@ -3,19 +3,28 @@ package com.mtplayground.ble.datacollector.ble
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattDescriptor
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Build
+import com.mtplayground.ble.datacollector.ble.model.BlePacket
 import com.mtplayground.ble.datacollector.ble.model.DiscoveredDevice
 import com.mtplayground.ble.datacollector.core.Config
+import java.util.UUID
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 enum class ScanStartResult {
@@ -53,11 +62,15 @@ class BleManager(
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     private val _isScanning = MutableStateFlow(false)
     private val _connectionState = MutableStateFlow(ConnectionLifecycleState.Disconnected)
+    private val _incomingPackets = MutableSharedFlow<BlePacket>(extraBufferCapacity = 64)
     private var currentGatt: BluetoothGatt? = null
+    private var connectedDeviceName: String? = null
+    private var connectedMacAddress: String? = null
 
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
     val connectionState: StateFlow<ConnectionLifecycleState> = _connectionState.asStateFlow()
+    val incomingPackets: SharedFlow<BlePacket> = _incomingPackets.asSharedFlow()
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -100,7 +113,24 @@ class BleManager(
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            subscribeToFirstNotifiableCharacteristic(gatt)
             _connectionState.value = ConnectionLifecycleState.Connected
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+        ) {
+            emitPacket(gatt, value)
+        }
+
+        @Suppress("DEPRECATION")
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+        ) {
+            emitPacket(gatt, characteristic.value ?: ByteArray(0))
         }
     }
 
@@ -181,6 +211,8 @@ class BleManager(
 
         stopScan()
         closeGatt(currentGatt)
+        connectedMacAddress = macAddress
+        connectedDeviceName = devicesByAddress[macAddress]?.name ?: bluetoothDeviceName(device, macAddress)
         _connectionState.value = ConnectionLifecycleState.Connecting
 
         val gatt = try {
@@ -192,14 +224,20 @@ class BleManager(
             )
         } catch (_: SecurityException) {
             _connectionState.value = ConnectionLifecycleState.Disconnected
+            connectedDeviceName = null
+            connectedMacAddress = null
             return ConnectResult.PermissionDenied
         } catch (_: IllegalArgumentException) {
             _connectionState.value = ConnectionLifecycleState.Disconnected
+            connectedDeviceName = null
+            connectedMacAddress = null
             return ConnectResult.InvalidAddress
         }
 
         return if (gatt == null) {
             _connectionState.value = ConnectionLifecycleState.Disconnected
+            connectedDeviceName = null
+            connectedMacAddress = null
             ConnectResult.Failed
         } else {
             currentGatt = gatt
@@ -246,6 +284,13 @@ class BleManager(
             .build()
 
     @SuppressLint("MissingPermission")
+    private fun bluetoothDeviceName(device: BluetoothDevice, fallback: String): String = try {
+        device.name ?: fallback
+    } catch (_: SecurityException) {
+        fallback
+    }
+
+    @SuppressLint("MissingPermission")
     private fun requestMaximumMtu(gatt: BluetoothGatt): Boolean = try {
         gatt.requestMtu(Config.requestedMtu)
     } catch (_: SecurityException) {
@@ -265,6 +310,65 @@ class BleManager(
         }
     }
 
+    @SuppressLint("MissingPermission")
+    private fun subscribeToFirstNotifiableCharacteristic(gatt: BluetoothGatt) {
+        val characteristic = gatt.services
+            .asSequence()
+            .flatMap { service -> service.characteristics.asSequence() }
+            .firstOrNull { characteristic -> characteristic.supportsNotifications() }
+            ?: return
+
+        val descriptor = characteristic.getDescriptor(ClientCharacteristicConfigUuid) ?: return
+        val notificationEnabled = try {
+            gatt.setCharacteristicNotification(characteristic, true)
+        } catch (_: SecurityException) {
+            false
+        }
+
+        if (!notificationEnabled) {
+            return
+        }
+
+        writeNotificationDescriptor(
+            gatt = gatt,
+            descriptor = descriptor,
+            value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+        )
+    }
+
+    private fun BluetoothGattCharacteristic.supportsNotifications(): Boolean =
+        properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+
+    @SuppressLint("MissingPermission")
+    @Suppress("DEPRECATION")
+    private fun writeNotificationDescriptor(
+        gatt: BluetoothGatt,
+        descriptor: BluetoothGattDescriptor,
+        value: ByteArray,
+    ): Boolean = try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeDescriptor(descriptor, value) == BluetoothStatusCodes.SUCCESS
+        } else {
+            descriptor.value = value
+            gatt.writeDescriptor(descriptor)
+        }
+    } catch (_: SecurityException) {
+        false
+    }
+
+    private fun emitPacket(gatt: BluetoothGatt, rawBytes: ByteArray) {
+        val macAddress = connectedMacAddress ?: gatt.device.address
+        val deviceName = connectedDeviceName ?: macAddress
+        _incomingPackets.tryEmit(
+            BlePacket(
+                deviceName = deviceName,
+                macAddress = macAddress,
+                rawBytes = rawBytes.copyOf(),
+                receivedAtMillis = nowMillis(),
+            ),
+        )
+    }
+
     private fun closeGatt(gatt: BluetoothGatt?) {
         if (gatt == null) {
             return
@@ -275,11 +379,16 @@ class BleManager(
         } finally {
             if (currentGatt == gatt) {
                 currentGatt = null
+                connectedDeviceName = null
+                connectedMacAddress = null
             }
         }
     }
 
     companion object {
+        private val ClientCharacteristicConfigUuid: UUID =
+            UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
         fun matchesNameFilter(
             advertisedName: String,
             prefixes: List<String> = Config.bleNameFilterPrefixes,
