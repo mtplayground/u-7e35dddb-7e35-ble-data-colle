@@ -162,7 +162,7 @@ class FileLogger(
 
     companion object {
         private val FileTimestampFormatter: DateTimeFormatter =
-            DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss", Locale.US)
+            DateTimeFormatter.ofPattern(Config.sessionTimestampPattern, Locale.US)
 
         fun buildSessionFileName(
             deviceName: String,
