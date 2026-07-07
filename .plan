@@ -1,0 +1,39 @@
+Architecture plan for the BLE data collector Android app
+
+Module structure and file organization
+- Use a single Android app module initially, with Kotlin, Jetpack Compose, Material 3, and Gradle Kotlin DSL.
+- Package layout:
+  - ui/navigation: Compose NavHost and route definitions for Scan and Live screens.
+  - ui/scan: Scan screen state, device list composables, permission and adapter prompt UI hooks.
+  - ui/live: Live data screen, connection status, packet display, and recording controls.
+  - ble: BleManager, scan filters, connection lifecycle, MTU request, service discovery, characteristic subscription, packet flow, disconnect/retry handling.
+  - data: shared app models such as ScanDevice, ConnectionState, PacketRecord, RecordingState, and app constants.
+  - format: packet formatting and hex conversion helpers for the exact two-line record output.
+  - logging: FileLogger and session file naming for MediaStore Downloads.
+  - permissions: runtime Bluetooth/location permission helpers and rationale state.
+  - test: focused unit tests for formatting, hex conversion, name filtering, and file naming.
+
+Shared types
+- AppConfig: BLE scan name/service filters, MTU size, file naming prefixes, and logging constants.
+- ScanDevice: stable device id/address, display name, RSSI, last seen timestamp, and connect metadata.
+- BleConnectionState: disconnected, scanning, connecting, discovering, subscribed, retrying, disconnecting, error.
+- PacketRecord: raw bytes, receive timestamp, formatted hex, and final two-line record text.
+- RecordingState: idle, recording with session metadata, stopping, error.
+
+Dependencies between issues
+- Issue #1 establishes the Android project, Gradle setup, Compose, Material 3, and test foundation.
+- Issue #2 adds manifest capabilities and config constants used by scanning, permissions, and logging.
+- Issues #3-5 create navigation and prerequisite UX for permissions and Bluetooth adapter state.
+- Issues #6-7 implement filtered scanning and expose live scan results in the Scan screen.
+- Issues #8-10 build connection, MTU negotiation, discovery, subscription, packet emission, state handling, disconnect, and retry behavior.
+- Issues #11-16 layer formatting, Live UI, MediaStore logging, recording wiring, and unit tests over the BLE data flow.
+- Issue #17 reviews denied permissions, BLE failures, and user-facing error states across the app.
+- Issue #18 performs end-to-end verification and produces the release APK.
+
+Key design decisions
+- Keep BLE operations behind BleManager and expose state with Kotlin Flow so Compose screens remain lifecycle-aware and testable.
+- Model permission, adapter, scan, connection, packet, and recording state explicitly instead of deriving UI behavior from nullable values.
+- Request MTU 512 immediately after connection, then discover services and subscribe to the first notifiable characteristic discovered.
+- Make packet formatting a pure Kotlin layer so exact output can be unit-tested independently from Android BLE APIs.
+- Isolate MediaStore writes in FileLogger; Live UI should only toggle recording and observe logger state.
+- Start with one app module to reduce setup overhead; split into additional modules only if later issues create meaningful compile or ownership boundaries.
