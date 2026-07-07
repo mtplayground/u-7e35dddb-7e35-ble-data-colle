@@ -8,6 +8,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.mtplayground.ble.datacollector.ui.common.PermissionGate
 import com.mtplayground.ble.datacollector.ui.live.LiveScreen
 import com.mtplayground.ble.datacollector.ui.scan.ScanScreen
 
@@ -26,11 +27,13 @@ fun BleNavGraph(modifier: Modifier = Modifier) {
         modifier = modifier,
     ) {
         composable(route = ScanRoute) {
-            ScanScreen(
-                onDeviceSelected = { deviceName ->
-                    navController.navigate("$LiveRoute/${Uri.encode(deviceName)}")
-                },
-            )
+            PermissionGate {
+                ScanScreen(
+                    onDeviceSelected = { deviceName ->
+                        navController.navigate("$LiveRoute/${Uri.encode(deviceName)}")
+                    },
+                )
+            }
         }
 
         composable(
