@@ -16,6 +16,14 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "BLE_NAME_FILTER_PREFIX_CM", "\"CM-\"")
+        buildConfigField("String", "BLE_NAME_FILTER_PREFIX_SKIING", "\"x_skiing\"")
+        buildConfigField("int", "REQUESTED_MTU", "512")
+        buildConfigField("String", "SESSION_FILE_PREFIX", "\"ble-session\"")
+        buildConfigField("String", "SESSION_FILE_EXTENSION", "\"txt\"")
+        buildConfigField("String", "SESSION_TIMESTAMP_PATTERN", "\"yyyyMMdd-HHmmss\"")
+        buildConfigField("String", "SESSION_MIME_TYPE", "\"text/plain\"")
     }
 
     buildTypes {
@@ -40,6 +48,7 @@ android {
     }
 
     buildFeatures {
+        buildConfig = true
         compose = true
     }
 }
