@@ -2,7 +2,11 @@ package com.mtplayground.ble.datacollector.ble
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
@@ -24,6 +28,22 @@ enum class ScanStartResult {
     Failed,
 }
 
+enum class ConnectionLifecycleState {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+enum class ConnectResult {
+    Started,
+    AlreadyConnecting,
+    BluetoothUnavailable,
+    BluetoothDisabled,
+    InvalidAddress,
+    PermissionDenied,
+    Failed,
+}
+
 class BleManager(
     context: Context,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
@@ -32,9 +52,12 @@ class BleManager(
     private val devicesByAddress = LinkedHashMap<String, DiscoveredDevice>()
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     private val _isScanning = MutableStateFlow(false)
+    private val _connectionState = MutableStateFlow(ConnectionLifecycleState.Disconnected)
+    private var currentGatt: BluetoothGatt? = null
 
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+    val connectionState: StateFlow<ConnectionLifecycleState> = _connectionState.asStateFlow()
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -47,6 +70,37 @@ class BleManager(
 
         override fun onScanFailed(errorCode: Int) {
             _isScanning.value = false
+        }
+    }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                closeGatt(gatt)
+                _connectionState.value = ConnectionLifecycleState.Disconnected
+                return
+            }
+
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    if (!requestMaximumMtu(gatt)) {
+                        discoverServices(gatt)
+                    }
+                }
+
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    closeGatt(gatt)
+                    _connectionState.value = ConnectionLifecycleState.Disconnected
+                }
+            }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            discoverServices(gatt)
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            _connectionState.value = ConnectionLifecycleState.Connected
         }
     }
 
@@ -105,6 +159,69 @@ class BleManager(
         _discoveredDevices.value = emptyList()
     }
 
+    @SuppressLint("MissingPermission")
+    fun connect(macAddress: String): ConnectResult {
+        if (_connectionState.value == ConnectionLifecycleState.Connecting) {
+            return ConnectResult.AlreadyConnecting
+        }
+
+        val adapter = bluetoothAdapter()
+            ?: return ConnectResult.BluetoothUnavailable
+
+        val device = try {
+            if (!adapter.isEnabled) {
+                return ConnectResult.BluetoothDisabled
+            }
+            adapter.getRemoteDevice(macAddress)
+        } catch (_: IllegalArgumentException) {
+            return ConnectResult.InvalidAddress
+        } catch (_: SecurityException) {
+            return ConnectResult.PermissionDenied
+        }
+
+        stopScan()
+        closeGatt(currentGatt)
+        _connectionState.value = ConnectionLifecycleState.Connecting
+
+        val gatt = try {
+            device.connectGatt(
+                appContext,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE,
+            )
+        } catch (_: SecurityException) {
+            _connectionState.value = ConnectionLifecycleState.Disconnected
+            return ConnectResult.PermissionDenied
+        } catch (_: IllegalArgumentException) {
+            _connectionState.value = ConnectionLifecycleState.Disconnected
+            return ConnectResult.InvalidAddress
+        }
+
+        return if (gatt == null) {
+            _connectionState.value = ConnectionLifecycleState.Disconnected
+            ConnectResult.Failed
+        } else {
+            currentGatt = gatt
+            ConnectResult.Started
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnect() {
+        val gatt = currentGatt ?: run {
+            _connectionState.value = ConnectionLifecycleState.Disconnected
+            return
+        }
+
+        try {
+            gatt.disconnect()
+        } catch (_: SecurityException) {
+            closeGatt(gatt)
+            _connectionState.value = ConnectionLifecycleState.Disconnected
+        }
+    }
+
     private fun handleScanResult(result: ScanResult) {
         val advertisedName = result.scanRecord?.deviceName
             ?.takeIf(::matchesNameFilter)
@@ -127,6 +244,40 @@ class BleManager(
         ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
+
+    @SuppressLint("MissingPermission")
+    private fun requestMaximumMtu(gatt: BluetoothGatt): Boolean = try {
+        gatt.requestMtu(Config.requestedMtu)
+    } catch (_: SecurityException) {
+        false
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun discoverServices(gatt: BluetoothGatt) {
+        val discoveryStarted = try {
+            gatt.discoverServices()
+        } catch (_: SecurityException) {
+            false
+        }
+
+        if (!discoveryStarted) {
+            _connectionState.value = ConnectionLifecycleState.Connected
+        }
+    }
+
+    private fun closeGatt(gatt: BluetoothGatt?) {
+        if (gatt == null) {
+            return
+        }
+
+        try {
+            gatt.close()
+        } finally {
+            if (currentGatt == gatt) {
+                currentGatt = null
+            }
+        }
+    }
 
     companion object {
         fun matchesNameFilter(
