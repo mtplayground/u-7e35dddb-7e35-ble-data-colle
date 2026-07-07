@@ -62,14 +62,18 @@ class BleManager(
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     private val _isScanning = MutableStateFlow(false)
     private val _connectionState = MutableStateFlow(ConnectionLifecycleState.Disconnected)
+    private val _connectionError = MutableStateFlow<String?>(null)
     private val _incomingPackets = MutableSharedFlow<BlePacket>(extraBufferCapacity = 64)
     private var currentGatt: BluetoothGatt? = null
     private var connectedDeviceName: String? = null
     private var connectedMacAddress: String? = null
+    private var lastRequestedMacAddress: String? = null
+    private var manualDisconnectRequested: Boolean = false
 
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
     val connectionState: StateFlow<ConnectionLifecycleState> = _connectionState.asStateFlow()
+    val connectionError: StateFlow<String?> = _connectionError.asStateFlow()
     val incomingPackets: SharedFlow<BlePacket> = _incomingPackets.asSharedFlow()
 
     private val scanCallback = object : ScanCallback() {
@@ -89,21 +93,25 @@ class BleManager(
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (status != BluetoothGatt.GATT_SUCCESS) {
-                closeGatt(gatt)
-                _connectionState.value = ConnectionLifecycleState.Disconnected
+                markDisconnected(gatt, "GATT connection failed with status $status.")
                 return
             }
 
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
+                    _connectionError.value = null
                     if (!requestMaximumMtu(gatt)) {
                         discoverServices(gatt)
                     }
                 }
 
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    closeGatt(gatt)
-                    _connectionState.value = ConnectionLifecycleState.Disconnected
+                    val message = if (manualDisconnectRequested) {
+                        null
+                    } else {
+                        "Device disconnected."
+                    }
+                    markDisconnected(gatt, message)
                 }
             }
         }
@@ -113,6 +121,11 @@ class BleManager(
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                markDisconnected(gatt, "Service discovery failed with status $status.")
+                return
+            }
+
             subscribeToFirstNotifiableCharacteristic(gatt)
             _connectionState.value = ConnectionLifecycleState.Connected
         }
@@ -195,18 +208,34 @@ class BleManager(
             return ConnectResult.AlreadyConnecting
         }
 
+        lastRequestedMacAddress = macAddress
+        _connectionError.value = null
+        manualDisconnectRequested = false
+
         val adapter = bluetoothAdapter()
-            ?: return ConnectResult.BluetoothUnavailable
+            ?: return connectionFailure(
+                result = ConnectResult.BluetoothUnavailable,
+                message = "Bluetooth is not available on this device.",
+            )
 
         val device = try {
             if (!adapter.isEnabled) {
-                return ConnectResult.BluetoothDisabled
+                return connectionFailure(
+                    result = ConnectResult.BluetoothDisabled,
+                    message = "Bluetooth is disabled.",
+                )
             }
             adapter.getRemoteDevice(macAddress)
         } catch (_: IllegalArgumentException) {
-            return ConnectResult.InvalidAddress
+            return connectionFailure(
+                result = ConnectResult.InvalidAddress,
+                message = "Device address is invalid.",
+            )
         } catch (_: SecurityException) {
-            return ConnectResult.PermissionDenied
+            return connectionFailure(
+                result = ConnectResult.PermissionDenied,
+                message = "Bluetooth connect permission is required.",
+            )
         }
 
         stopScan()
@@ -223,22 +252,22 @@ class BleManager(
                 BluetoothDevice.TRANSPORT_LE,
             )
         } catch (_: SecurityException) {
-            _connectionState.value = ConnectionLifecycleState.Disconnected
-            connectedDeviceName = null
-            connectedMacAddress = null
-            return ConnectResult.PermissionDenied
+            return connectionFailure(
+                result = ConnectResult.PermissionDenied,
+                message = "Bluetooth connect permission is required.",
+            )
         } catch (_: IllegalArgumentException) {
-            _connectionState.value = ConnectionLifecycleState.Disconnected
-            connectedDeviceName = null
-            connectedMacAddress = null
-            return ConnectResult.InvalidAddress
+            return connectionFailure(
+                result = ConnectResult.InvalidAddress,
+                message = "Device address is invalid.",
+            )
         }
 
         return if (gatt == null) {
-            _connectionState.value = ConnectionLifecycleState.Disconnected
-            connectedDeviceName = null
-            connectedMacAddress = null
-            ConnectResult.Failed
+            connectionFailure(
+                result = ConnectResult.Failed,
+                message = "Unable to open a GATT connection.",
+            )
         } else {
             currentGatt = gatt
             ConnectResult.Started
@@ -249,15 +278,30 @@ class BleManager(
     fun disconnect() {
         val gatt = currentGatt ?: run {
             _connectionState.value = ConnectionLifecycleState.Disconnected
+            _connectionError.value = null
             return
         }
 
+        manualDisconnectRequested = true
+        _connectionError.value = null
         try {
             gatt.disconnect()
         } catch (_: SecurityException) {
-            closeGatt(gatt)
-            _connectionState.value = ConnectionLifecycleState.Disconnected
+            markDisconnected(gatt, "Bluetooth connect permission was revoked.")
         }
+    }
+
+    fun reconnect(): ConnectResult {
+        val macAddress = lastRequestedMacAddress
+            ?: return connectionFailure(
+                result = ConnectResult.InvalidAddress,
+                message = "No previous device is available to reconnect.",
+            )
+        return connect(macAddress)
+    }
+
+    fun clearConnectionError() {
+        _connectionError.value = null
     }
 
     private fun handleScanResult(result: ScanResult) {
@@ -306,7 +350,7 @@ class BleManager(
         }
 
         if (!discoveryStarted) {
-            _connectionState.value = ConnectionLifecycleState.Connected
+            markDisconnected(gatt, "Service discovery could not be started.")
         }
     }
 
@@ -367,6 +411,23 @@ class BleManager(
                 receivedAtMillis = nowMillis(),
             ),
         )
+    }
+
+    private fun connectionFailure(result: ConnectResult, message: String): ConnectResult {
+        closeGatt(currentGatt)
+        connectedDeviceName = null
+        connectedMacAddress = null
+        manualDisconnectRequested = false
+        _connectionState.value = ConnectionLifecycleState.Disconnected
+        _connectionError.value = message
+        return result
+    }
+
+    private fun markDisconnected(gatt: BluetoothGatt?, message: String?) {
+        closeGatt(gatt)
+        manualDisconnectRequested = false
+        _connectionState.value = ConnectionLifecycleState.Disconnected
+        _connectionError.value = message
     }
 
     private fun closeGatt(gatt: BluetoothGatt?) {
