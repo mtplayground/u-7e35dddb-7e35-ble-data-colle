@@ -6,22 +6,26 @@ import androidx.lifecycle.viewModelScope
 import com.mtplayground.ble.datacollector.ble.BleManager
 import com.mtplayground.ble.datacollector.ble.ConnectResult
 import com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState
+import com.mtplayground.ble.datacollector.format.PacketFormatter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 data class ConnectionUiState(
     val deviceAddress: String? = null,
     val lifecycleState: ConnectionLifecycleState = ConnectionLifecycleState.Disconnected,
     val errorMessage: String? = null,
+    val formattedRecords: List<String> = emptyList(),
 ) {
     val isConnected: Boolean = lifecycleState == ConnectionLifecycleState.Connected
     val isConnecting: Boolean = lifecycleState == ConnectionLifecycleState.Connecting
     val canDisconnect: Boolean = lifecycleState != ConnectionLifecycleState.Disconnected
     val canRetry: Boolean = deviceAddress != null &&
         lifecycleState == ConnectionLifecycleState.Disconnected
+    val recordCount: Int = formattedRecords.size
 }
 
 class ConnectionViewModel(
@@ -29,22 +33,33 @@ class ConnectionViewModel(
 ) : AndroidViewModel(application) {
     private val bleManager = BleManager(application)
     private val targetDeviceAddress = MutableStateFlow<String?>(null)
+    private val formattedRecords = MutableStateFlow<List<String>>(emptyList())
 
     val uiState: StateFlow<ConnectionUiState> = combine(
         targetDeviceAddress,
         bleManager.connectionState,
         bleManager.connectionError,
-    ) { deviceAddress, lifecycleState, errorMessage ->
+        formattedRecords,
+    ) { deviceAddress, lifecycleState, errorMessage, records ->
         ConnectionUiState(
             deviceAddress = deviceAddress,
             lifecycleState = lifecycleState,
             errorMessage = errorMessage,
+            formattedRecords = records,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(stopTimeoutMillis = 5_000),
         initialValue = ConnectionUiState(),
     )
+
+    init {
+        viewModelScope.launch {
+            bleManager.incomingPackets.collect { packet ->
+                formattedRecords.value += PacketFormatter.format(packet)
+            }
+        }
+    }
 
     fun connect(deviceAddress: String) {
         targetDeviceAddress.value = deviceAddress
