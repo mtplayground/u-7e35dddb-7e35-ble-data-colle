@@ -1,5 +1,11 @@
 target/
 node_modules/
+.gradle/
+build/
+**/build/
+local.properties
+.idea/
+*.iml
 .gh_token
 .database_url
 .task_id

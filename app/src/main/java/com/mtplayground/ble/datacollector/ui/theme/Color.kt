@@ -1,0 +1,27 @@
+package com.mtplayground.ble.datacollector.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val Primary = Color(0xFF006B5B)
+val OnPrimary = Color(0xFFFFFFFF)
+val PrimaryContainer = Color(0xFF82F8DA)
+val OnPrimaryContainer = Color(0xFF002019)
+val Secondary = Color(0xFF4A635C)
+val OnSecondary = Color(0xFFFFFFFF)
+val SecondaryContainer = Color(0xFFCDE8DE)
+val OnSecondaryContainer = Color(0xFF06201A)
+val Tertiary = Color(0xFF426277)
+val OnTertiary = Color(0xFFFFFFFF)
+val TertiaryContainer = Color(0xFFC7E7FF)
+val OnTertiaryContainer = Color(0xFF001E2D)
+val Error = Color(0xFFBA1A1A)
+val OnError = Color(0xFFFFFFFF)
+val ErrorContainer = Color(0xFFFFDAD6)
+val OnErrorContainer = Color(0xFF410002)
+val Background = Color(0xFFFAFDF9)
+val OnBackground = Color(0xFF191C1A)
+val Surface = Color(0xFFFAFDF9)
+val OnSurface = Color(0xFF191C1A)
+val SurfaceVariant = Color(0xFFDBE5DF)
+val OnSurfaceVariant = Color(0xFF3F4945)
+val Outline = Color(0xFF6F7975)
