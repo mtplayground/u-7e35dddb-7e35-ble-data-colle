@@ -1,5 +1,6 @@
 package com.mtplayground.ble.datacollector.ui.common
 
+import android.content.ActivityNotFoundException
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -38,12 +39,16 @@ fun PermissionGate(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var requestAttempted by rememberSaveable { mutableStateOf(false) }
+    var permissionActionError by rememberSaveable { mutableStateOf<String?>(null) }
     var permissionState by remember {
         mutableStateOf(PermissionController.evaluate(context, requestAttempted))
     }
 
     fun refreshPermissionState() {
         permissionState = PermissionController.evaluate(context, requestAttempted)
+        if (permissionState.allGranted) {
+            permissionActionError = null
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -70,9 +75,11 @@ fun PermissionGate(
     } else {
         PermissionRequiredContent(
             state = permissionState,
+            actionError = permissionActionError,
             modifier = modifier,
             onRequestPermissions = {
                 requestAttempted = true
+                permissionActionError = null
                 val missingPermissions = permissionState.missingPermissions
                     .map(RuntimePermission::value)
                     .toTypedArray()
@@ -83,7 +90,14 @@ fun PermissionGate(
                 }
             },
             onOpenSettings = {
-                context.startActivity(PermissionController.appSettingsIntent(context))
+                permissionActionError = null
+                try {
+                    context.startActivity(PermissionController.appSettingsIntent(context))
+                } catch (_: ActivityNotFoundException) {
+                    permissionActionError = "Android app settings are not available on this device."
+                } catch (_: SecurityException) {
+                    permissionActionError = "Android blocked opening app settings."
+                }
             },
         )
     }
@@ -92,6 +106,7 @@ fun PermissionGate(
 @Composable
 private fun PermissionRequiredContent(
     state: PermissionUiState,
+    actionError: String?,
     onRequestPermissions: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
@@ -117,6 +132,14 @@ private fun PermissionRequiredContent(
             },
             style = MaterialTheme.typography.bodyMedium,
         )
+
+        actionError?.let { message ->
+            Text(
+                text = message,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
 
         if (state.isPermanentlyDenied) {
             OutlinedButton(onClick = onOpenSettings) {
@@ -156,6 +179,7 @@ private fun PermissionRequiredContentPreview() {
                 permanentlyDeniedPermissions = emptyList(),
                 shouldShowRationale = true,
             ),
+            actionError = null,
             onRequestPermissions = {},
             onOpenSettings = {},
         )

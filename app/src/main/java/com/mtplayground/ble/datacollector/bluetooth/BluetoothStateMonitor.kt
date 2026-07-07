@@ -71,7 +71,11 @@ object BluetoothStateMonitor {
 
             onDispose {
                 lifecycleOwner.lifecycle.removeObserver(observer)
-                context.unregisterReceiver(receiver)
+                try {
+                    context.unregisterReceiver(receiver)
+                } catch (_: IllegalArgumentException) {
+                    // The receiver can already be unregistered if the lifecycle tears down abruptly.
+                }
             }
         }
 
