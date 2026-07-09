@@ -31,7 +31,7 @@ import com.mtplayground.ble.datacollector.ui.theme.BleDataCollectorTheme
 
 @Composable
 fun ScanScreen(
-    onDeviceSelected: (String) -> Unit,
+    onOpenLive: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ScanViewModel = viewModel(),
 ) {
@@ -54,7 +54,7 @@ fun ScanScreen(
         onDisconnectDevice = viewModel::disconnectDevice,
         onDeviceSelected = { device ->
             viewModel.selectDevice(device)
-            onDeviceSelected(device.macAddress)
+            onOpenLive()
         },
     )
 }

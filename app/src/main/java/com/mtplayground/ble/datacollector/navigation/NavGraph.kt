@@ -1,13 +1,10 @@
 package com.mtplayground.ble.datacollector.navigation
 
-import android.net.Uri
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.navArgument
 import com.mtplayground.ble.datacollector.ui.common.EnableBluetoothPrompt
 import com.mtplayground.ble.datacollector.ui.common.PermissionGate
 import com.mtplayground.ble.datacollector.ui.live.LiveScreen
@@ -15,8 +12,6 @@ import com.mtplayground.ble.datacollector.ui.scan.ScanScreen
 
 private const val ScanRoute = "scan"
 private const val LiveRoute = "live"
-private const val DeviceNameArg = "deviceName"
-private const val LiveRoutePattern = "$LiveRoute/{$DeviceNameArg}"
 
 @Composable
 fun BleNavGraph(modifier: Modifier = Modifier) {
@@ -31,24 +26,17 @@ fun BleNavGraph(modifier: Modifier = Modifier) {
             PermissionGate {
                 EnableBluetoothPrompt {
                     ScanScreen(
-                        onDeviceSelected = { deviceName ->
-                            navController.navigate("$LiveRoute/${Uri.encode(deviceName)}")
+                        onOpenLive = {
+                            navController.navigate(LiveRoute)
                         },
                     )
                 }
             }
         }
 
-        composable(
-            route = LiveRoutePattern,
-            arguments = listOf(
-                navArgument(DeviceNameArg) {
-                    type = NavType.StringType
-                },
-            ),
-        ) { backStackEntry ->
+        composable(route = LiveRoute) {
             LiveScreen(
-                deviceName = backStackEntry.arguments?.getString(DeviceNameArg).orEmpty(),
+                deviceName = "",
                 onBack = { navController.popBackStack() },
             )
         }
