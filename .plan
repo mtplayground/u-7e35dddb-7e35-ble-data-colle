@@ -1,39 +1,52 @@
-Architecture plan for the BLE data collector Android app
+Architecture plan for issues #37-#46: multi-device BLE collection and sensor control
 
 Module structure and file organization
-- Use a single Android app module initially, with Kotlin, Jetpack Compose, Material 3, and Gradle Kotlin DSL.
-- Package layout:
-  - ui/navigation: Compose NavHost and route definitions for Scan and Live screens.
-  - ui/scan: Scan screen state, device list composables, permission and adapter prompt UI hooks.
-  - ui/live: Live data screen, connection status, packet display, and recording controls.
-  - ble: BleManager, scan filters, connection lifecycle, MTU request, service discovery, characteristic subscription, packet flow, disconnect/retry handling.
-  - data: shared app models such as ScanDevice, ConnectionState, PacketRecord, RecordingState, and app constants.
-  - format: packet formatting and hex conversion helpers for the exact two-line record output.
-  - logging: FileLogger and session file naming for MediaStore Downloads.
-  - permissions: runtime Bluetooth/location permission helpers and rationale state.
-  - test: focused unit tests for formatting, hex conversion, name filtering, and file naming.
-
-Shared types
-- AppConfig: BLE scan name/service filters, MTU size, file naming prefixes, and logging constants.
-- ScanDevice: stable device id/address, display name, RSSI, last seen timestamp, and connect metadata.
-- BleConnectionState: disconnected, scanning, connecting, discovering, subscribed, retrying, disconnecting, error.
-- PacketRecord: raw bytes, receive timestamp, formatted hex, and final two-line record text.
-- RecordingState: idle, recording with session metadata, stopping, error.
+- Keep the existing single Android app module and current package root `com.mtplayground.ble.datacollector`.
+- `ble/`
+  - Evolve `BleManager` into the shared BLE runtime for scanning plus many active GATT connections.
+  - Add a per-device model such as `DeviceConnection` containing MAC address, device name, `BluetoothGatt`, lifecycle state, error message, notifiable characteristic, writable characteristic, and command/write metadata.
+  - Expose aggregate connection state as Flow, e.g. `connections: StateFlow<Map<String, DeviceConnectionState>>`, and keep `incomingPackets` as a merged stream with each `BlePacket` carrying device name and MAC.
+- `ble/model/`
+  - Keep `BlePacket` and `DiscoveredDevice`.
+  - Add UI-safe immutable connection snapshots separate from Android objects so ViewModels/tests do not depend on `BluetoothGatt`.
+- `ble/protocol/`
+  - Add pure protocol types/functions for issue #42: `SensorSide`, `BleCommand`, `BleCommandResponse`, `SensorInitState`, and `SensorProtocol`.
+  - This layer only builds command byte arrays and matches known response packets; it must not parse framed streams or depend on Android.
+- `ui/scan/`
+  - Update `ScanViewModel` and `ScanScreen` to merge discovered devices with `BleManager.connections` so each row has Connect/Disconnect controls and per-device state labels.
+- `navigation/`
+  - Replace `live/{deviceName}` with a global Live route that has no device argument.
+- `ui/live/`
+  - Refactor `ConnectionViewModel` to observe all connected devices, aggregate incoming packets, drive one session recording, and maintain per-device command/control state.
+  - Update `LiveScreen` to show all connected devices, one aggregated live packet list, recording status, and per-device sensor controls.
+- `format/` and `storage/`
+  - Reuse `PacketFormatter`, `HexUtils`, and `FileLogger`; preserve the existing two-line record format and write all devices into a single session file.
+- `docs/`
+  - Update `docs/manual-test-checklist.md` for two-device connection, initialization, source selection, start/stop collection, and aggregated recording verification.
+- `app/src/test/`
+  - Add tests for multi-device state, aggregate ordering/recording, protocol bytes/response matching, and session filename rules.
 
 Dependencies between issues
-- Issue #1 establishes the Android project, Gradle setup, Compose, Material 3, and test foundation.
-- Issue #2 adds manifest capabilities and config constants used by scanning, permissions, and logging.
-- Issues #3-5 create navigation and prerequisite UX for permissions and Bluetooth adapter state.
-- Issues #6-7 implement filtered scanning and expose live scan results in the Scan screen.
-- Issues #8-10 build connection, MTU negotiation, discovery, subscription, packet emission, state handling, disconnect, and retry behavior.
-- Issues #11-16 layer formatting, Live UI, MediaStore logging, recording wiring, and unit tests over the BLE data flow.
-- Issue #17 reviews denied permissions, BLE failures, and user-facing error states across the app.
-- Issue #18 performs end-to-end verification and produces the release APK.
+1. #37 is foundational: multi-connection `BleManager` and shared connection state.
+2. #38 depends on #37: scan row Connect/Disconnect actions and per-device state.
+3. #39 depends on #38: global Live navigation after devices can be connected independently from the scan list.
+4. #40 depends on #37 and #39: global Live ViewModel/UI data flow and single aggregated recording.
+5. #41 depends on #37-#40: tests for multi-device connection state and aggregate recording behavior.
+6. #42 is mostly independent and should be pure Kotlin: command/response protocol helpers.
+7. #43 depends on #37 and benefits from #42: per-device writable characteristic discovery and `writeCommand(mac, bytes)`.
+8. #44 depends on #40, #42, and #43: ViewModel command orchestration with timeouts and response matching per MAC.
+9. #45 depends on #44: Live screen per-device controls and enable/disable rules.
+10. #46 depends on #42-#45: protocol unit tests and manual checklist update.
 
 Key design decisions
-- Keep BLE operations behind BleManager and expose state with Kotlin Flow so Compose screens remain lifecycle-aware and testable.
-- Model permission, adapter, scan, connection, packet, and recording state explicitly instead of deriving UI behavior from nullable values.
-- Request MTU 512 immediately after connection, then discover services and subscribe to the first notifiable characteristic discovered.
-- Make packet formatting a pure Kotlin layer so exact output can be unit-tested independently from Android BLE APIs.
-- Isolate MediaStore writes in FileLogger; Live UI should only toggle recording and observe logger state.
-- Start with one app module to reduce setup overhead; split into additional modules only if later issues create meaningful compile or ownership boundaries.
+- Use MAC address as the stable device key everywhere; display names remain mutable metadata from scan/GATT but are not route identifiers.
+- Do not close existing GATT connections when connecting another device. Scanning may continue while multiple devices are connected.
+- Separate Android-owned connection internals from immutable state snapshots exposed to UI/tests. Avoid leaking `BluetoothGatt` or characteristics outside `BleManager`.
+- Keep packet records source-aware by preserving `deviceName` and `macAddress` on every `BlePacket`; aggregate ordering should be based on receive timestamp/arrival order.
+- Preserve the existing output format exactly:
+  `[HH:mm:ss.SSS] 数据 -- deviceName=MAC` followed by `HEX: ...`.
+- Use one active `FileLogger` session for the global Live screen; all device packets append to that file in receive order.
+- Make the sensor protocol a pure byte-level layer. Command flow orchestration belongs in `ConnectionViewModel`; BLE writes belong in `BleManager`.
+- Serialize commands per device to avoid overlapping request/response waits; one device command should not block other devices.
+- Match command responses by target MAC and expected response bytes from `SensorProtocol`, with explicit timeout/error state per device.
+- Keep tests focused on pure protocol and state reducers where possible; Android BLE behavior should be covered through manual checklist and thin wrapper tests where feasible.
