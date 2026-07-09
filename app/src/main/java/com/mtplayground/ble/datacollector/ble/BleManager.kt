@@ -592,8 +592,17 @@ class BleManager(
     }
 
     companion object {
+        @Volatile
+        private var sharedInstance: BleManager? = null
+
         private val ClientCharacteristicConfigUuid: UUID =
             UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+        fun shared(context: Context): BleManager = sharedInstance ?: synchronized(this) {
+            sharedInstance ?: BleManager(context.applicationContext).also { manager ->
+                sharedInstance = manager
+            }
+        }
 
         fun matchesNameFilter(
             advertisedName: String,
