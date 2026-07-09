@@ -55,6 +55,15 @@ enum class ConnectResult {
     Failed,
 }
 
+enum class CommandWriteResult {
+    Started,
+    AlreadyInProgress,
+    DeviceNotConnected,
+    NoWritableCharacteristic,
+    PermissionDenied,
+    Failed,
+}
+
 class BleManager(
     context: Context,
     private val nowMillis: () -> Long = { System.currentTimeMillis() },
@@ -136,6 +145,9 @@ class BleManager(
                 return
             }
 
+            updateConnection(gatt) { connection ->
+                connection.writableCharacteristic = firstWritableCharacteristic(gatt)
+            }
             val subscriptionResult = subscribeToFirstNotifiableCharacteristic(gatt)
             if (subscriptionResult == null) {
                 updateConnection(gatt) { connection ->
@@ -161,6 +173,22 @@ class BleManager(
             characteristic: BluetoothGattCharacteristic,
         ) {
             emitPacket(gatt, characteristic.value ?: ByteArray(0))
+        }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int,
+        ) {
+            updateConnection(gatt) { connection ->
+                connection.isCommandWriteInProgress = false
+                connection.lastCommandWriteStatus = status
+                connection.errorMessage = if (status == BluetoothGatt.GATT_SUCCESS) {
+                    null
+                } else {
+                    "Command write failed with status $status."
+                }
+            }
         }
     }
 
@@ -365,6 +393,66 @@ class BleManager(
         }
     }
 
+    @SuppressLint("MissingPermission")
+    fun writeCommand(macAddress: String, bytes: ByteArray): CommandWriteResult {
+        val writeTarget = synchronized(connectionLock) {
+            val connection = connectionsByAddress[macAddress]
+                ?: return CommandWriteResult.DeviceNotConnected
+            val gatt = connection.gatt
+                ?: return CommandWriteResult.DeviceNotConnected
+            val characteristic = connection.writableCharacteristic
+                ?: return CommandWriteResult.NoWritableCharacteristic
+
+            if (connection.lifecycleState != ConnectionLifecycleState.Connected) {
+                return CommandWriteResult.DeviceNotConnected
+            }
+            if (connection.isCommandWriteInProgress) {
+                return CommandWriteResult.AlreadyInProgress
+            }
+
+            connection.isCommandWriteInProgress = true
+            connection.lastCommandWriteStatus = null
+            connection.errorMessage = null
+            publishConnectionsLocked()
+
+            CommandWriteTarget(
+                gatt = gatt,
+                characteristic = characteristic,
+                writeType = characteristic.preferredWriteType(),
+                payload = bytes.copyOf(),
+            )
+        }
+
+        val writeStarted = try {
+            writeTarget.characteristic.writeType = writeTarget.writeType
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                writeTarget.gatt.writeCharacteristic(
+                    writeTarget.characteristic,
+                    writeTarget.payload,
+                    writeTarget.writeType,
+                ) == BluetoothStatusCodes.SUCCESS
+            } else {
+                @Suppress("DEPRECATION")
+                writeTarget.characteristic.value = writeTarget.payload
+                @Suppress("DEPRECATION")
+                writeTarget.gatt.writeCharacteristic(writeTarget.characteristic)
+            }
+        } catch (_: SecurityException) {
+            clearCommandWriteInProgress(macAddress)
+            return CommandWriteResult.PermissionDenied
+        } catch (_: RuntimeException) {
+            clearCommandWriteInProgress(macAddress)
+            return CommandWriteResult.Failed
+        }
+
+        return if (writeStarted) {
+            CommandWriteResult.Started
+        } else {
+            clearCommandWriteInProgress(macAddress)
+            CommandWriteResult.Failed
+        }
+    }
+
     private fun handleScanResult(result: ScanResult) {
         val advertisedName = result.scanRecord?.deviceName
             ?.takeIf(::matchesNameFilter)
@@ -432,6 +520,10 @@ class BleManager(
             .firstOrNull { characteristic -> characteristic.supportsNotifications() }
             ?: return "No notifiable characteristic was found on this device."
 
+        updateConnection(gatt) { connection ->
+            connection.notifiableCharacteristic = characteristic
+        }
+
         val descriptor = characteristic.getDescriptor(ClientCharacteristicConfigUuid)
             ?: return "The notifiable characteristic is missing its notification descriptor."
         val notificationEnabled = try {
@@ -458,6 +550,26 @@ class BleManager(
 
     private fun BluetoothGattCharacteristic.supportsNotifications(): Boolean =
         properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0
+
+    private fun firstWritableCharacteristic(gatt: BluetoothGatt): BluetoothGattCharacteristic? =
+        gatt.services
+            .asSequence()
+            .flatMap { service -> service.characteristics.asSequence() }
+            .firstOrNull { characteristic -> characteristic.supportsWrites() }
+
+    private fun BluetoothGattCharacteristic.supportsWrites(): Boolean =
+        (properties and (
+            BluetoothGattCharacteristic.PROPERTY_WRITE or
+                BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
+            )) != 0
+
+    private fun BluetoothGattCharacteristic.preferredWriteType(): Int = if (
+        (properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+    ) {
+        BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+    } else {
+        BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+    }
 
     @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION")
@@ -514,6 +626,9 @@ class BleManager(
         closeGatt(gatt)
         updateConnection(macAddress) { connection ->
             connection.gatt = null
+            connection.notifiableCharacteristic = null
+            connection.writableCharacteristic = null
+            connection.isCommandWriteInProgress = false
             connection.lifecycleState = ConnectionLifecycleState.Disconnected
             connection.errorMessage = message
             connection.manualDisconnectRequested = false
@@ -535,6 +650,9 @@ class BleManager(
                 val connection = connectionsByAddress[macAddress]
                 if (connection?.gatt == gatt) {
                     connection.gatt = null
+                    connection.notifiableCharacteristic = null
+                    connection.writableCharacteristic = null
+                    connection.isCommandWriteInProgress = false
                     publishConnectionsLocked()
                 }
             }
@@ -570,6 +688,13 @@ class BleManager(
         }
     }
 
+    private fun clearCommandWriteInProgress(macAddress: String) {
+        updateConnection(macAddress) { connection ->
+            connection.isCommandWriteInProgress = false
+            connection.lastCommandWriteStatus = null
+        }
+    }
+
     private fun publishConnectionsLocked() {
         val snapshots = connectionsByAddress.values.map(DeviceConnection::toState)
         _connections.value = snapshots
@@ -590,6 +715,13 @@ class BleManager(
     } else {
         "GATT connection failed with status $status."
     }
+
+    private data class CommandWriteTarget(
+        val gatt: BluetoothGatt,
+        val characteristic: BluetoothGattCharacteristic,
+        val writeType: Int,
+        val payload: ByteArray,
+    )
 
     companion object {
         @Volatile

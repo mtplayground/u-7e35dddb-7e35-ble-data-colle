@@ -1,6 +1,7 @@
 package com.mtplayground.ble.datacollector.ble.model
 
 import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCharacteristic
 import com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState
 
 data class DeviceConnectionState(
@@ -8,6 +9,7 @@ data class DeviceConnectionState(
     val macAddress: String,
     val lifecycleState: ConnectionLifecycleState,
     val errorMessage: String?,
+    val lastCommandWriteStatus: Int? = null,
 )
 
 internal data class DeviceConnection(
@@ -16,6 +18,10 @@ internal data class DeviceConnection(
     var gatt: BluetoothGatt?,
     var lifecycleState: ConnectionLifecycleState,
     var errorMessage: String?,
+    var notifiableCharacteristic: BluetoothGattCharacteristic? = null,
+    var writableCharacteristic: BluetoothGattCharacteristic? = null,
+    var isCommandWriteInProgress: Boolean = false,
+    var lastCommandWriteStatus: Int? = null,
     var manualDisconnectRequested: Boolean = false,
 ) {
     fun toState(): DeviceConnectionState =
@@ -24,5 +30,6 @@ internal data class DeviceConnection(
             macAddress = macAddress,
             lifecycleState = lifecycleState,
             errorMessage = errorMessage,
+            lastCommandWriteStatus = lastCommandWriteStatus,
         )
 }
