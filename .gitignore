@@ -16,3 +16,6 @@ local.properties
 .pipeline-state.json
 .gitkeep
 .progress
+.env.production
+.authemail_decision
+.storage_decision
