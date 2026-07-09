@@ -50,6 +50,8 @@ fun ScanScreen(
         onStartScan = viewModel::startScan,
         onStopScan = viewModel::stopScan,
         onClearDevices = viewModel::clearDevices,
+        onConnectDevice = viewModel::connectDevice,
+        onDisconnectDevice = viewModel::disconnectDevice,
         onDeviceSelected = { device ->
             viewModel.selectDevice(device)
             onDeviceSelected(device.macAddress)
@@ -63,6 +65,8 @@ private fun ScanScreenContent(
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
     onClearDevices: () -> Unit,
+    onConnectDevice: (DiscoveredDevice) -> Unit,
+    onDisconnectDevice: (DiscoveredDevice) -> Unit,
     onDeviceSelected: (DiscoveredDevice) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -94,6 +98,8 @@ private fun ScanScreenContent(
         } else {
             DeviceList(
                 devices = uiState.devices,
+                onConnectDevice = onConnectDevice,
+                onDisconnectDevice = onDisconnectDevice,
                 onDeviceSelected = onDeviceSelected,
                 modifier = Modifier.weight(1f),
             )
@@ -169,18 +175,22 @@ private fun EmptyScanState(isScanning: Boolean) {
 
 @Composable
 private fun DeviceList(
-    devices: List<DiscoveredDevice>,
+    devices: List<ScanDeviceUiState>,
+    onConnectDevice: (DiscoveredDevice) -> Unit,
+    onDisconnectDevice: (DiscoveredDevice) -> Unit,
     onDeviceSelected: (DiscoveredDevice) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     LazyColumn(modifier = modifier.fillMaxWidth()) {
         items(
             items = devices,
-            key = DiscoveredDevice::macAddress,
-        ) { device ->
+            key = { deviceState -> deviceState.device.macAddress },
+        ) { deviceState ->
             DeviceRow(
-                device = device,
-                onClick = { onDeviceSelected(device) },
+                deviceState = deviceState,
+                onConnect = { onConnectDevice(deviceState.device) },
+                onDisconnect = { onDisconnectDevice(deviceState.device) },
+                onClick = { onDeviceSelected(deviceState.device) },
             )
             HorizontalDivider()
         }
@@ -189,31 +199,84 @@ private fun DeviceList(
 
 @Composable
 private fun DeviceRow(
-    device: DiscoveredDevice,
+    deviceState: ScanDeviceUiState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
     onClick: () -> Unit,
 ) {
+    val device = deviceState.device
     ListItem(
         headlineContent = {
             Text(text = device.name)
         },
         supportingContent = {
-            Text(text = device.macAddress)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(text = device.macAddress)
+                Text(
+                    text = connectionStatusText(deviceState),
+                    color = if (deviceState.connectionError == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
         },
         trailingContent = {
-            Column(horizontalAlignment = Alignment.End) {
-                Text(
-                    text = "${device.rssi} dBm",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                Text(
-                    text = signalStrengthLabel(device.rssi),
-                    style = MaterialTheme.typography.labelSmall,
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        text = "${device.rssi} dBm",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    Text(
+                        text = signalStrengthLabel(device.rssi),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                DeviceConnectionAction(
+                    deviceState = deviceState,
+                    onConnect = onConnect,
+                    onDisconnect = onDisconnect,
                 )
             }
         },
         modifier = Modifier.clickable(onClick = onClick),
     )
 }
+
+@Composable
+private fun DeviceConnectionAction(
+    deviceState: ScanDeviceUiState,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+) {
+    when {
+        deviceState.canDisconnect -> {
+            OutlinedButton(onClick = onDisconnect) {
+                Text(text = "Disconnect")
+            }
+        }
+
+        else -> {
+            Button(
+                onClick = onConnect,
+                enabled = deviceState.canConnect,
+            ) {
+                Text(text = "Connect")
+            }
+        }
+    }
+}
+
+private fun connectionStatusText(deviceState: ScanDeviceUiState): String =
+    deviceState.connectionError?.let { error ->
+        "${deviceState.stateLabel}: $error"
+    } ?: deviceState.stateLabel
 
 private fun signalStrengthLabel(rssi: Int): String = when {
     rssi >= -60 -> "Strong"
@@ -228,17 +291,22 @@ private fun ScanScreenContentPreview() {
         ScanScreenContent(
             uiState = ScanUiState(
                 devices = listOf(
-                    DiscoveredDevice(
-                        name = "CM-1001",
-                        macAddress = "00:11:22:33:44:55",
-                        rssi = -58,
-                        lastSeenMillis = 0L,
+                    ScanDeviceUiState(
+                        device = DiscoveredDevice(
+                            name = "CM-1001",
+                            macAddress = "00:11:22:33:44:55",
+                            rssi = -58,
+                            lastSeenMillis = 0L,
+                        ),
+                        connectionState = com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState.Connected,
                     ),
-                    DiscoveredDevice(
-                        name = "x_skiing-alpha",
-                        macAddress = "AA:BB:CC:DD:EE:FF",
-                        rssi = -82,
-                        lastSeenMillis = 0L,
+                    ScanDeviceUiState(
+                        device = DiscoveredDevice(
+                            name = "x_skiing-alpha",
+                            macAddress = "AA:BB:CC:DD:EE:FF",
+                            rssi = -82,
+                            lastSeenMillis = 0L,
+                        ),
                     ),
                 ),
                 isScanning = true,
@@ -246,6 +314,8 @@ private fun ScanScreenContentPreview() {
             onStartScan = {},
             onStopScan = {},
             onClearDevices = {},
+            onConnectDevice = {},
+            onDisconnectDevice = {},
             onDeviceSelected = {},
         )
     }
