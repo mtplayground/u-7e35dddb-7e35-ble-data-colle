@@ -26,6 +26,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState
 import com.mtplayground.ble.datacollector.ble.model.DeviceConnectionState
+import com.mtplayground.ble.datacollector.ble.protocol.SensorInitState
+import com.mtplayground.ble.datacollector.ble.protocol.SensorSide
 import com.mtplayground.ble.datacollector.ui.theme.BleDataCollectorTheme
 
 @Suppress("UNUSED_PARAMETER")
@@ -42,6 +44,10 @@ fun LiveScreen(
         uiState = connectionState,
         onDisconnectDevice = connectionViewModel::disconnectDevice,
         onDisconnectAll = connectionViewModel::disconnectAll,
+        onInitializeSensors = connectionViewModel::initializeSensors,
+        onSetDataSource = connectionViewModel::setDataSource,
+        onStartCollecting = connectionViewModel::startCollecting,
+        onStopCollecting = connectionViewModel::stopCollecting,
         onStartRecording = { connectionViewModel.startRecording() },
         onStopRecording = { connectionViewModel.stopRecording() },
         onBack = onBack,
@@ -54,6 +60,10 @@ private fun LiveScreenContent(
     uiState: ConnectionUiState,
     onDisconnectDevice: (String) -> Unit,
     onDisconnectAll: () -> Unit,
+    onInitializeSensors: (String) -> Unit,
+    onSetDataSource: (String, SensorSide) -> Unit,
+    onStartCollecting: (String) -> Unit,
+    onStopCollecting: (String) -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onBack: () -> Unit,
@@ -84,8 +94,12 @@ private fun LiveScreenContent(
             onStopRecording = onStopRecording,
         )
         DeviceConnectionList(
-            devices = uiState.devices,
+            uiState = uiState,
             onDisconnectDevice = onDisconnectDevice,
+            onInitializeSensors = onInitializeSensors,
+            onSetDataSource = onSetDataSource,
+            onStartCollecting = onStartCollecting,
+            onStopCollecting = onStopCollecting,
         )
         Row(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -158,15 +172,19 @@ private fun RecordingStatus(
 
 @Composable
 private fun DeviceConnectionList(
-    devices: List<DeviceConnectionState>,
+    uiState: ConnectionUiState,
     onDisconnectDevice: (String) -> Unit,
+    onInitializeSensors: (String) -> Unit,
+    onSetDataSource: (String, SensorSide) -> Unit,
+    onStartCollecting: (String) -> Unit,
+    onStopCollecting: (String) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = "Devices",
             style = MaterialTheme.typography.titleMedium,
         )
-        if (devices.isEmpty()) {
+        if (uiState.devices.isEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 color = MaterialTheme.colorScheme.surfaceVariant,
@@ -179,10 +197,15 @@ private fun DeviceConnectionList(
                 )
             }
         } else {
-            devices.forEach { device ->
+            uiState.devices.forEach { device ->
                 DeviceConnectionRow(
                     device = device,
+                    controlState = uiState.sensorControlFor(device.macAddress),
                     onDisconnectDevice = onDisconnectDevice,
+                    onInitializeSensors = onInitializeSensors,
+                    onSetDataSource = onSetDataSource,
+                    onStartCollecting = onStartCollecting,
+                    onStopCollecting = onStopCollecting,
                 )
                 HorizontalDivider()
             }
@@ -193,40 +216,157 @@ private fun DeviceConnectionList(
 @Composable
 private fun DeviceConnectionRow(
     device: DeviceConnectionState,
+    controlState: DeviceSensorControlState,
     onDisconnectDevice: (String) -> Unit,
+    onInitializeSensors: (String) -> Unit,
+    onSetDataSource: (String, SensorSide) -> Unit,
+    onStartCollecting: (String) -> Unit,
+    onStopCollecting: (String) -> Unit,
 ) {
-    Row(
+    val isConnected = device.lifecycleState == ConnectionLifecycleState.Connected
+    val controlsEnabled = isConnected && !controlState.isCommandInProgress
+    val canStartCollecting = controlsEnabled &&
+        controlState.isInitialized &&
+        controlState.selectedSide != null &&
+        !controlState.isCollecting
+    val canStopCollecting = isConnected && controlState.isCollecting && !controlState.isCommandInProgress
+
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    text = device.deviceName,
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Text(
+                    text = device.macAddress,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = connectionStatusText(device),
+                    color = if (device.errorMessage == null) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            OutlinedButton(
+                onClick = { onDisconnectDevice(device.macAddress) },
+                enabled = device.lifecycleState != ConnectionLifecycleState.Disconnected,
+            ) {
+                Text(text = "Disconnect")
+            }
+        }
+
+        DeviceSensorStatus(controlState = controlState)
+        DeviceSensorControls(
+            macAddress = device.macAddress,
+            controlsEnabled = controlsEnabled,
+            canStartCollecting = canStartCollecting,
+            canStopCollecting = canStopCollecting,
+            onInitializeSensors = onInitializeSensors,
+            onSetDataSource = onSetDataSource,
+            onStartCollecting = onStartCollecting,
+            onStopCollecting = onStopCollecting,
+        )
+    }
+}
+
+@Composable
+private fun DeviceSensorStatus(controlState: DeviceSensorControlState) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(
+            text = "初始化: ${initializationStatusText(controlState)}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "数据源: ${controlState.selectedSide?.displayName() ?: "未设置"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            text = "采集: ${if (controlState.isCollecting) "采集中" else "未采集"}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        controlState.commandMessage?.let { message ->
             Text(
-                text = device.deviceName,
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            Text(
-                text = device.macAddress,
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                text = connectionStatusText(device),
-                color = if (device.errorMessage == null) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
+                text = message,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        OutlinedButton(
-            onClick = { onDisconnectDevice(device.macAddress) },
-            enabled = device.lifecycleState != ConnectionLifecycleState.Disconnected,
+        controlState.commandError?.let { error ->
+            Text(
+                text = error,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeviceSensorControls(
+    macAddress: String,
+    controlsEnabled: Boolean,
+    canStartCollecting: Boolean,
+    canStopCollecting: Boolean,
+    onInitializeSensors: (String) -> Unit,
+    onSetDataSource: (String, SensorSide) -> Unit,
+    onStartCollecting: (String) -> Unit,
+    onStopCollecting: (String) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = "Disconnect")
+            Button(
+                onClick = { onInitializeSensors(macAddress) },
+                enabled = controlsEnabled,
+            ) {
+                Text(text = "初始化传感器")
+            }
+            OutlinedButton(
+                onClick = { onSetDataSource(macAddress, SensorSide.Left) },
+                enabled = controlsEnabled,
+            ) {
+                Text(text = "设为左脚")
+            }
+            OutlinedButton(
+                onClick = { onSetDataSource(macAddress, SensorSide.Right) },
+                enabled = controlsEnabled,
+            ) {
+                Text(text = "设为右脚")
+            }
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                onClick = { onStartCollecting(macAddress) },
+                enabled = canStartCollecting,
+            ) {
+                Text(text = "开始采集")
+            }
+            OutlinedButton(
+                onClick = { onStopCollecting(macAddress) },
+                enabled = canStopCollecting,
+            ) {
+                Text(text = "停止采集")
+            }
         }
     }
 }
@@ -279,6 +419,24 @@ private fun LiveRecordList(
     }
 }
 
+private fun initializationStatusText(controlState: DeviceSensorControlState): String = when {
+    controlState.isCommandInProgress -> "处理中"
+    controlState.isInitialized -> "全部完成"
+    controlState.initializedSensors.isEmpty() -> "未初始化"
+    else -> "已完成 ${controlState.initializedSensors.joinToString(separator = ", ") { sensor -> sensor.displayName() }}"
+}
+
+private fun SensorInitState.displayName(): String = when (this) {
+    SensorInitState.SixAxis -> "六轴"
+    SensorInitState.Magnetometer -> "地磁"
+    SensorInitState.Barometer -> "气压计"
+}
+
+private fun SensorSide.displayName(): String = when (this) {
+    SensorSide.Left -> "左脚"
+    SensorSide.Right -> "右脚"
+}
+
 private fun connectionStatusText(device: DeviceConnectionState): String =
     device.errorMessage?.let { error ->
         "错误: $error"
@@ -320,6 +478,10 @@ private fun LiveScreenPreview() {
             ),
             onDisconnectDevice = {},
             onDisconnectAll = {},
+            onInitializeSensors = {},
+            onSetDataSource = { _, _ -> },
+            onStartCollecting = {},
+            onStopCollecting = {},
             onStartRecording = {},
             onStopRecording = {},
             onBack = {},
