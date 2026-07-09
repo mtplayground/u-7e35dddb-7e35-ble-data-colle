@@ -42,6 +42,8 @@ class FileLogger(
     val currentSession: LogSession?
         get() = activeSession?.logSession
 
+    fun startAggregatedSession(): FileLoggerResult = start(Config.sessionFilePrefix)
+
     fun start(deviceName: String): FileLoggerResult {
         stop()
 

@@ -4,8 +4,8 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mtplayground.ble.datacollector.ble.BleManager
-import com.mtplayground.ble.datacollector.ble.ConnectResult
 import com.mtplayground.ble.datacollector.ble.ConnectionLifecycleState
+import com.mtplayground.ble.datacollector.ble.model.DeviceConnectionState
 import com.mtplayground.ble.datacollector.format.PacketFormatter
 import com.mtplayground.ble.datacollector.storage.FileLogger
 import com.mtplayground.ble.datacollector.storage.FileLoggerResult
@@ -15,22 +15,23 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class ConnectionUiState(
-    val deviceAddress: String? = null,
-    val lifecycleState: ConnectionLifecycleState = ConnectionLifecycleState.Disconnected,
-    val errorMessage: String? = null,
+    val devices: List<DeviceConnectionState> = emptyList(),
     val formattedRecords: List<String> = emptyList(),
     val recordingState: RecordingUiState = RecordingUiState(),
 ) {
-    val isConnected: Boolean = lifecycleState == ConnectionLifecycleState.Connected
-    val isConnecting: Boolean = lifecycleState == ConnectionLifecycleState.Connecting
-    val canDisconnect: Boolean = lifecycleState != ConnectionLifecycleState.Disconnected
-    val canRetry: Boolean = deviceAddress != null &&
-        lifecycleState == ConnectionLifecycleState.Disconnected
+    val connectedDevices: List<DeviceConnectionState> = devices.filter { device ->
+        device.lifecycleState == ConnectionLifecycleState.Connected
+    }
+    val hasConnectedDevices: Boolean = connectedDevices.isNotEmpty()
+    val hasDisconnectableDevices: Boolean = devices.any { device ->
+        device.lifecycleState != ConnectionLifecycleState.Disconnected
+    }
     val recordCount: Int = formattedRecords.size
-    val canStartRecording: Boolean = isConnected && !recordingState.isRecording
+    val canStartRecording: Boolean = hasConnectedDevices && !recordingState.isRecording
     val canStopRecording: Boolean = recordingState.isRecording
 }
 
@@ -44,26 +45,22 @@ data class RecordingUiState(
 class ConnectionViewModel(
     application: Application,
 ) : AndroidViewModel(application) {
-    private val bleManager = BleManager(application)
+    private val bleManager = BleManager.shared(application)
     private val fileLogger = FileLogger(application)
     private val fileLoggerLock = Any()
-    private val targetDeviceAddress = MutableStateFlow<String?>(null)
     private val formattedRecords = MutableStateFlow<List<String>>(emptyList())
     private val recordingState = MutableStateFlow(RecordingUiState())
-    private var lastPacketDeviceName: String? = null
-    private var autoStartConsumedForConnection = false
 
     val uiState: StateFlow<ConnectionUiState> = combine(
-        targetDeviceAddress,
-        bleManager.connectionState,
-        bleManager.connectionError,
+        bleManager.connections,
         formattedRecords,
         recordingState,
-    ) { deviceAddress, lifecycleState, errorMessage, records, recording ->
+    ) { devices, records, recording ->
         ConnectionUiState(
-            deviceAddress = deviceAddress,
-            lifecycleState = lifecycleState,
-            errorMessage = errorMessage,
+            devices = devices.sortedWith(
+                compareBy<DeviceConnectionState> { it.deviceName.lowercase() }
+                    .thenBy { it.macAddress },
+            ),
             formattedRecords = records,
             recordingState = recording,
         )
@@ -76,66 +73,62 @@ class ConnectionViewModel(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             bleManager.incomingPackets.collect { packet ->
-                lastPacketDeviceName = packet.deviceName
                 val formattedRecord = PacketFormatter.format(packet)
-                formattedRecords.value += formattedRecord
+                formattedRecords.update { records -> records + formattedRecord }
                 appendRecordIfRecording(formattedRecord)
             }
         }
 
         viewModelScope.launch(Dispatchers.IO) {
-            bleManager.connectionState.collect { lifecycleState ->
-                when (lifecycleState) {
-                    ConnectionLifecycleState.Connected -> {
-                        if (!autoStartConsumedForConnection) {
-                            autoStartConsumedForConnection = true
-                            startRecording(resolveRecordingDeviceName())
-                        }
-                    }
-
-                    ConnectionLifecycleState.Disconnected -> {
-                        autoStartConsumedForConnection = false
-                        stopRecording()
-                    }
-
-                    ConnectionLifecycleState.Connecting -> Unit
+            bleManager.connections.collect { devices ->
+                val anyConnected = devices.any { device ->
+                    device.lifecycleState == ConnectionLifecycleState.Connected
+                }
+                if (!anyConnected && recordingState.value.isRecording) {
+                    stopRecording()
                 }
             }
         }
     }
 
-    fun connect(deviceAddress: String) {
-        targetDeviceAddress.value = deviceAddress
-        bleManager.connect(deviceAddress)
+    fun disconnectDevice(macAddress: String) {
+        bleManager.disconnect(macAddress)
     }
 
-    fun disconnect() {
+    fun disconnectAll() {
         stopRecording()
-        bleManager.disconnect()
+        bleManager.disconnectAll()
     }
 
-    fun retry() {
-        when (bleManager.reconnect()) {
-            ConnectResult.Started,
-            ConnectResult.AlreadyConnecting,
-            -> Unit
-
-            ConnectResult.BluetoothUnavailable,
-            ConnectResult.BluetoothDisabled,
-            ConnectResult.InvalidAddress,
-            ConnectResult.PermissionDenied,
-            ConnectResult.Failed,
-            -> Unit
-        }
-    }
-
-    fun clearError() {
+    fun clearErrors() {
         bleManager.clearConnectionError()
+        recordingState.update { state -> state.copy(errorMessage = null) }
     }
 
-    fun startRecording() {
-        autoStartConsumedForConnection = true
-        startRecording(resolveRecordingDeviceName())
+    fun startRecording(): FileLoggerResult {
+        if (!uiState.value.hasConnectedDevices) {
+            recordingState.update { state ->
+                state.copy(errorMessage = "Connect at least one device before recording.")
+            }
+            return FileLoggerResult.Failure("Connect at least one device before recording.")
+        }
+
+        val result = synchronized(fileLoggerLock) {
+            fileLogger.startAggregatedSession()
+        }
+
+        recordingState.value = when (result) {
+            FileLoggerResult.Success -> RecordingUiState(
+                isRecording = true,
+                activeFileName = fileLogger.currentSession?.displayName,
+            )
+
+            is FileLoggerResult.Failure -> RecordingUiState(
+                isRecording = false,
+                errorMessage = result.message,
+            )
+        }
+        return result
     }
 
     fun stopRecording(): FileLoggerResult {
@@ -156,27 +149,7 @@ class ConnectionViewModel(
 
     override fun onCleared() {
         stopRecording()
-        bleManager.disconnect()
         super.onCleared()
-    }
-
-    private fun startRecording(deviceName: String): FileLoggerResult {
-        val result = synchronized(fileLoggerLock) {
-            fileLogger.start(deviceName)
-        }
-
-        recordingState.value = when (result) {
-            FileLoggerResult.Success -> RecordingUiState(
-                isRecording = true,
-                activeFileName = fileLogger.currentSession?.displayName,
-            )
-
-            is FileLoggerResult.Failure -> RecordingUiState(
-                isRecording = false,
-                errorMessage = result.message,
-            )
-        }
-        return result
     }
 
     private fun appendRecordIfRecording(formattedRecord: String) {
@@ -201,9 +174,4 @@ class ConnectionViewModel(
             )
         }
     }
-
-    private fun resolveRecordingDeviceName(): String =
-        lastPacketDeviceName
-            ?: targetDeviceAddress.value
-            ?: "device"
 }

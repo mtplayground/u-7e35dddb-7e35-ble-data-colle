@@ -41,7 +41,7 @@ data class ScanUiState(
 class ScanViewModel(
     application: Application,
 ) : AndroidViewModel(application) {
-    private val bleManager = BleManager(application)
+    private val bleManager = BleManager.shared(application)
     private val statusMessage = MutableStateFlow<String?>(null)
 
     val uiState: StateFlow<ScanUiState> = combine(
